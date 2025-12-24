@@ -53,24 +53,30 @@ fn read_integer(line: &[u8]) -> (i32, usize) {
 
 ///Identifies the data type from request, and calls the corresponding parser
 ///The input stream is in the form of bytes of vector
-fn parse_dispatcher(input: &[u8]) -> &u8 {
+///Need this to return RespValue as well as the bytes consumed
+fn parse_dispatcher(input: &[u8]) -> RespValue {
     let data_type = input.first().unwrap_or_else(|| {
         eprint!("No input received");
         exit(1);
     });
+    dbg!(data_type);
 
     match data_type {
         b'+' | b'-' | b':' => {
-           _ = simple_parser(input, data_type);
+           simple_parser(input, data_type)
         },
         b'$' => {
-            _ = bulk_string_parser(input);
+            bulk_string_parser(input)
         }
-        b'*' => bulk_array_parser(),
-        _ => eprint!("Unknown data type")
+        b'*' => {
+            bulk_array_parser(input)
+        },
+        _ => {
+            eprint!("Simple Parser: Unknown data type");
+            exit(1);
+        }
     }
 
-    data_type
 }
 
 fn parse_int(input: &[u8]) -> i64{
@@ -137,35 +143,36 @@ fn bulk_string_parser(input: &[u8]) -> RespValue{
     RespValue::BulkString(Some(data.0.to_vec()))
 }
 
-fn bulk_array_parser(){
-    unimplemented!();
+fn bulk_array_parser(input: &[u8]) -> RespValue { 
+    let (size_of_array, length_of_size) = read_integer(&input[1..]);
+
+    let mut curr_input = &input[(length_of_size + 1)..];
+
+    let mut bulk_array = Vec::new();
+
+    for _ in 0..size_of_array {
+
+        if curr_input.is_empty() {
+            break;
+        }
+        
+        let curr_element = parse_dispatcher(curr_input);
+        bulk_array.push(curr_element);
+
+        if !curr_data.1.is_empty() {
+            curr_input = &curr_data.1[2..];
+        }
+    }
+
+    dbg!(&bulk_array);
+    RespValue::Arrays(Some(bulk_array))
+
 }
 
 
 #[cfg(test)]
 mod tests{
     use super::*;
-    
-    #[test]
-    fn parse_dispatcher_test_string(){
-        let input = b"+1\r\n";
-        let res = parse_dispatcher(input);
-        assert_eq!(*res, b'+');
-    }
- 
-    #[test]
-    fn parse_dispatcher_test_integer(){
-        let input = b":+1\r\n";
-        let res = parse_dispatcher(input);
-        assert_eq!(*res, b':');
-    }
- 
-    #[test]
-    fn parse_dispatcher_test_error(){
-        let input = b"-Error message\r\n";
-        let res = parse_dispatcher(input);
-        assert_eq!(*res, b'-');
-    }
 
     #[test]
     fn simple_parser_integer_test(){
@@ -201,7 +208,20 @@ mod tests{
         let res = bulk_string_parser(input);
         assert_eq!(res, RespValue::BulkString(Some(b"He\rl\nl\r\no".to_vec())));
     }
+
+    #[test]
+    fn bulk_array_parse_test(){
+        let input = b"*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n";
+        let res = bulk_array_parser(input);
+        let result = RespValue::Arrays(Some(vec![
+            RespValue::BulkString(Some(b"hello".to_vec())),
+            RespValue::BulkString(Some(b"world".to_vec())),
+        ]));
+        assert_eq!(res, result);
+    }
+
 }
+
 
 
 

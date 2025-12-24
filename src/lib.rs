@@ -194,6 +194,13 @@ mod tests{
         let res = bulk_string_parser(input);
         assert_eq!(res, RespValue::BulkString(Some(b"Hello".to_vec())));
     }
+
+    #[test]
+    fn bulk_string_parse_test2(){
+        let input = b"$9\r\nHe\rl\nl\r\no\r\n";
+        let res = bulk_string_parser(input);
+        assert_eq!(res, RespValue::BulkString(Some(b"He\rl\nl\r\no".to_vec())));
+    }
 }
 
 

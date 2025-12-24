@@ -97,7 +97,7 @@ fn parse_int(input: &[u8]) -> i64{
 
 
 fn simple_parser(input: &[u8], data_type: &u8) -> RespValue {
-    let data = read_line(&input[1..]).expect("Missing CRRL");
+    let data = read_line(&input[1..]).expect("Missing CFRL");
     match data_type {
         b'+' => {
             RespValue::SimpleString(data.0.to_vec())

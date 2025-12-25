@@ -14,12 +14,6 @@ enum ParseError {
     MissingCRLF
 }
 
-#[derive(PartialEq)]
-enum CrLfCheck {
-    Required,
-    Skip,
-}
-
 #[derive(Debug)]
 pub enum RespValue{
     SimpleString(Vec<u8>),
@@ -47,16 +41,15 @@ impl PartialEq for RespValue{
     }
 }
 
-fn read_line(line: &[u8], min_len_before_crlf: Option<usize>) -> Result<(&[u8], &[u8]), ParseError> {
+fn read_line(line: &[u8], min_len_before_crlf: usize) -> Result<(&[u8], &[u8]), ParseError> {
     let mut i = 0;
-    let skip = min_len_before_crlf.unwrap_or(0);
     
-    if line.len() < skip {
+    if line.len() < min_len_before_crlf {
         return Err(ParseError::MissingCRLF);
     }
 
     while i + 1< line.len(){
-        if line[i] == b'\r' && line[i + 1] == b'\n' && i >= skip {
+        if line[i] == b'\r' && line[i + 1] == b'\n' && i >= min_len_before_crlf {
             //skip the CLRF token in the remaining returned
             return Ok((&line[..i], &line[i+2..]));
         }
@@ -66,7 +59,10 @@ fn read_line(line: &[u8], min_len_before_crlf: Option<usize>) -> Result<(&[u8], 
 }
 
 
-fn read_integer(line: &[u8], crlf: CrLfCheck) -> Result<(i64, usize), ParseError> {
+fn read_integer(line: &[u8]) -> Result<(i64, usize), ParseError> {
+    if line.is_empty() {
+        return Err(ParseError::UnexpectedEof);
+    }
     let mut idx = 0;
     let mut sign = 1;
 
@@ -79,26 +75,18 @@ fn read_integer(line: &[u8], crlf: CrLfCheck) -> Result<(i64, usize), ParseError
 
     let mut value: i64 = 0;
 
+    //No digit present
+    if idx >= line.len(){
+        return Err(ParseError::UnexpectedEof);
+    }
+
     while idx < line.len() {
-        if line[idx] == b'\r' && line[idx + 1] == b'\n'{
-            break;
-        }
         if !line[idx].is_ascii_digit() {
             return Err(ParseError::InvalidLength);
         }
         value = value * 10 + (line[idx] - b'0') as i64;
         idx += 1;
     }
-
-    // Expect CRLF
-    //
-    let skip_crlf = crlf == CrLfCheck::Skip;
-    dbg!(skip_crlf);
-    if !skip_crlf && (idx >= line.len() || line[idx] != b'\r' || line[idx + 1] != b'\n') {
-        return Err(ParseError::MissingCRLF);
-    }
-
-    idx += 2;
 
     Ok((sign * value, idx))
 }
@@ -131,7 +119,7 @@ fn parse_dispatcher(input: &[u8]) -> ParseResult {
 }
 
 fn simple_parser(input: &[u8], data_type: &u8) -> ParseResult {
-    let data = read_line(&input[1..], None)?;
+    let data = read_line(&input[1..], 0)?;
     match data_type {
         b'+' => {
             Ok(ParseValue{
@@ -146,7 +134,7 @@ fn simple_parser(input: &[u8], data_type: &u8) -> ParseResult {
             })
         },
         b':' => {
-            let (val, _) = read_integer(data.0, CrLfCheck::Skip)?;
+            let (val, _) = read_integer(data.0)?;
             dbg!(val);
             Ok(ParseValue{
                 result: RespValue::Integer(val),
@@ -161,7 +149,9 @@ fn simple_parser(input: &[u8], data_type: &u8) -> ParseResult {
 }
 
 fn bulk_string_parser(input: &[u8]) -> ParseResult {
-    let (size_of_string, length_of_string) = read_integer(&input[1..], CrLfCheck::Required)?;       
+    let size_input = read_line(&input[1..], 0)?;
+    let (size_of_string, mut length_of_string) = read_integer(size_input.0)?;       
+    length_of_string += 2;
     if size_of_string < 0{
         return Ok(ParseValue{
             result: RespValue::BulkString(None),
@@ -169,7 +159,11 @@ fn bulk_string_parser(input: &[u8]) -> ParseResult {
         });
     }
 
-    let data = read_line(&input[(length_of_string + 1)..], Some(size_of_string as usize))?;
+    let data = read_line(&input[(length_of_string + 1)..], size_of_string as usize)?;
+
+    if data.0.len() != size_of_string as usize {
+        return Err(ParseError::InvalidLength);
+    }
   
     Ok(ParseValue{
         result: RespValue::BulkString(Some(data.0.to_vec())),
@@ -178,7 +172,9 @@ fn bulk_string_parser(input: &[u8]) -> ParseResult {
 }
 
 fn bulk_array_parser(input: &[u8]) -> ParseResult { 
-    let (size_of_array, length_of_size) = read_integer(&input[1..], CrLfCheck::Skip)?;
+    let size_input = read_line(&input[1..], 0)?;
+    let (size_of_array, mut length_of_size) = read_integer(size_input.0)?;
+    length_of_size += 2;
     if size_of_array < 0{
         return Ok(ParseValue{
             result: RespValue::Arrays(None),
@@ -202,7 +198,9 @@ fn bulk_array_parser(input: &[u8]) -> ParseResult {
 
         bulk_array.push(curr_element.result);
         total_bytes_read += curr_element.bytes_read;
-        curr_input = &input[total_bytes_read..];
+        curr_input = input
+            .get(total_bytes_read..)
+            .ok_or(ParseError::UnexpectedEof)?;
     }
 
     Ok(ParseValue{
@@ -334,23 +332,23 @@ mod tests{
 
     #[test]
     fn read_integer_negative() {
-        let (v, n) = read_integer(b"-1\r\n", CrLfCheck::Required).unwrap();
+        let (v, n) = read_integer(b"-1").unwrap();
         assert_eq!(v, -1);
-        assert_eq!(n, 4);
+        assert_eq!(n, 2);
     }
 
     #[test]
     fn read_integer_positive_with_plus() {
-        let (v, n) = read_integer(b"+42\r\n", CrLfCheck::Required).unwrap();
+        let (v, n) = read_integer(b"+42").unwrap();
         assert_eq!(v, 42);
-        assert_eq!(n, 5);
+        assert_eq!(n, 3);
     }
 
     #[test]
     fn read_integer_zero() {
-        let (v, n) = read_integer(b"0\r\n", CrLfCheck::Required).unwrap();
+        let (v, n) = read_integer(b"0").unwrap();
         assert_eq!(v, 0);
-        assert_eq!(n, 3);
+        assert_eq!(n, 1);
     }
 
     #[test]
@@ -471,6 +469,12 @@ mod tests{
         assert!(res.is_err());
     }
     #[test]
+    fn bulk_string_parser_invalid(){
+        let input = b"$3\r\nabcd\r\n";
+        let res = bulk_string_parser(input);
+        assert!(res.is_err());
+    }
+    #[test]
     fn bulk_array_invalid_length() {
         let input = b"*x\r\n";
         let res = bulk_array_parser(input);
@@ -514,10 +518,11 @@ mod tests{
         assert_eq!(res.result, expected);
     }
 
+    
     #[test]
     fn read_integer_invalid_input(){
-        let input = b":\r\n";
-        let res = read_integer(input, CrLfCheck::Required);
+        let input = b"+";
+        let res = read_integer(input);
         assert!(res.is_err());
     }
 }

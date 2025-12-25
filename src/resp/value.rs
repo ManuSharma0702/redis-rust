@@ -11,7 +11,8 @@ pub enum ParseError {
     InvalidInput,
     InvalidLength,
     UnexpectedEof,
-    MissingCRLF
+    MissingCRLF,
+    InvalidRespValue
 }
 
 #[derive(Debug)]

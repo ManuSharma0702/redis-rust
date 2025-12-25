@@ -1,6 +1,7 @@
 #[derive(Debug)]
 pub enum Commands {
     PING,
+    ECHO,
 }
 
 #[derive(Debug)]

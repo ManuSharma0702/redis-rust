@@ -15,7 +15,7 @@ pub enum ParseError {
     InvalidRespValue
 }
 
-#[derive(Debug)]
+#[derive(Clone,Debug)]
 pub enum RespValue{
     SimpleString(Vec<u8>),
     Error(Vec<u8>),

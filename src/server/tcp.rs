@@ -1,7 +1,7 @@
 use std::{io::{Read, Write}, net::{TcpListener, TcpStream}} ;
 
 use crate::{command::{execute_command, get_command, CommandError}, 
-    resp::{serializer::serializer, ParseError, RespValue}, server::value::ServerError};
+    resp::{parse_dispatcher, serializer::serializer, ParseError, RespValue}, server::value::ServerError};
 
 impl From<CommandError> for ServerError {
     fn from(e: CommandError) -> Self{
@@ -37,8 +37,10 @@ fn handle_connection(mut stream: TcpStream) {
 }
 
 fn process(data: &[u8]) -> Result<Vec<u8>, ServerError>{
-    let command = get_command(data)?;
-    let result = execute_command(command)?;
+
+    let parsed_data = parse_dispatcher(data)?.result;
+    let command = get_command(&parsed_data)?;
+    let result = execute_command(command, &parsed_data)?;
 
     let output_data = serializer(&result)?;
     Ok(output_data)

@@ -502,6 +502,16 @@ mod tests{
         let res = read_integer(input);
         assert!(res.is_err());
     }
+
+    #[test]
+    fn bulk_array_parser_ping_input(){
+        let input = b"*1\r\n$4\r\nPING\r\n";
+        let res = bulk_array_parser(input).unwrap();
+        let expected = RespValue::Arrays(Some(vec![
+                RespValue::BulkString(Some(b"PING".to_vec()))
+        ]));
+        assert_eq!(res.result, expected);
+    }
 }
 
 

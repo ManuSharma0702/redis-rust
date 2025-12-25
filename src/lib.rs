@@ -1,4 +1,24 @@
-use std::process::exit;
+type ParseResult = Result<ParseValue, ParseError>;
+
+#[derive(Debug)]
+struct ParseValue{
+    result: RespValue,
+    bytes_read: usize
+}
+
+#[derive(Debug)]
+enum ParseError {
+    InvalidInput,
+    InvalidLength,
+    UnexpectedEof,
+    MissingCRLF
+}
+
+#[derive(PartialEq)]
+enum CrLfCheck {
+    Required,
+    Skip,
+}
 
 #[derive(Debug)]
 pub enum RespValue{
@@ -27,43 +47,75 @@ impl PartialEq for RespValue{
     }
 }
 
-fn read_line(line: &[u8], skip_crlf_len: Option<usize>) -> Option<(&[u8], &[u8])>{
+fn read_line(line: &[u8], min_len_before_crlf: Option<usize>) -> Result<(&[u8], &[u8]), ParseError> {
     let mut i = 0;
-    let skip = skip_crlf_len.unwrap_or(0);
-    while i < line.len(){
+    let skip = min_len_before_crlf.unwrap_or(0);
+    
+    if line.len() < skip {
+        return Err(ParseError::MissingCRLF);
+    }
+
+    while i + 1< line.len(){
         if line[i] == b'\r' && line[i + 1] == b'\n' && i >= skip {
-            return Some((&line[..i], &line[i..]));
+            //skip the CLRF token in the remaining returned
+            return Ok((&line[..i], &line[i+2..]));
         }
         i += 1;
     }
-    None
+    Err(ParseError::MissingCRLF)
 }
 
-fn read_integer(line: &[u8]) -> (i32, usize) {
-    let mut r = 0;
-    let mut n = 0;
-    while line[r].is_ascii_digit(){
-        let digit = (line[r] - b'0') as i32;
-        n = n * 10 + digit;
-        r += 1;
+
+fn read_integer(line: &[u8], crlf: CrLfCheck) -> Result<(i64, usize), ParseError> {
+    let mut idx = 0;
+    let mut sign = 1;
+
+    if line[idx] == b'-' {
+        sign = -1;
+        idx += 1;
+    } else if line[idx] == b'+' {
+        idx += 1;
     }
-    r += b"\r\n".len();
-    (n, r)
+
+    let mut value: i64 = 0;
+
+    while idx < line.len() {
+        if line[idx] == b'\r' && line[idx + 1] == b'\n'{
+            break;
+        }
+        if !line[idx].is_ascii_digit() {
+            return Err(ParseError::InvalidLength);
+        }
+        value = value * 10 + (line[idx] - b'0') as i64;
+        idx += 1;
+    }
+
+    // Expect CRLF
+    //
+    let skip_crlf = crlf == CrLfCheck::Skip;
+    dbg!(skip_crlf);
+    if !skip_crlf && (idx >= line.len() || line[idx] != b'\r' || line[idx + 1] != b'\n') {
+        return Err(ParseError::MissingCRLF);
+    }
+
+    idx += 2;
+
+    Ok((sign * value, idx))
 }
+
 
 ///Identifies the data type from request, and calls the corresponding parser
 ///The input stream is in the form of bytes of vector
 ///Need this to return RespValue as well as the bytes consumed
-fn parse_dispatcher(input: &[u8]) -> RespValue {
-    let data_type = input.first().unwrap_or_else(|| {
-        eprint!("No input received");
-        exit(1);
-    });
-    dbg!(data_type);
+fn parse_dispatcher(input: &[u8]) -> ParseResult {
+    let data_type = match input.first() {
+        Some(n) => n,
+        None => return Err(ParseError::InvalidInput)
+    };
 
     match data_type {
         b'+' | b'-' | b':' => {
-           simple_parser(input, data_type)
+            simple_parser(input, data_type)
         },
         b'$' => {
             bulk_string_parser(input)
@@ -72,101 +124,91 @@ fn parse_dispatcher(input: &[u8]) -> RespValue {
             bulk_array_parser(input)
         },
         _ => {
-            eprint!("Simple Parser: Unknown data type");
-            exit(1);
+            eprintln!("Simple Parser: Unknown data type");
+            Err(ParseError::InvalidInput)
         }
     }
-
 }
 
-fn parse_int(input: &[u8]) -> i64{
-    if input.is_empty() {
-        eprintln!("Input is empty");
-        exit(1);
-    }
-    let mut sign = 1;
-    let mut i = 0;
-
-    match input[0] {
-        b'+' => i = 1,
-        b'-' => {
-            i = 1;
-            sign = -1
-        },
-        _ => i = 1
-    } 
-
-    let mut n: i64 = 0;
-
-    while i < input.len(){
-        let d = input[i];
-        if !d.is_ascii_digit(){
-            eprintln!("Not valid digit");
-            exit(1);
-        } else {
-            n = n.checked_mul(10)
-                .and_then(|x| x.checked_add((d - b'0') as i64))
-                .unwrap_or_else(|| {
-                    eprint!("Not a valid integer");
-                    exit(1);
-                });
-        }
-        i += 1;
-    }
-    n * sign
-}
-
-
-fn simple_parser(input: &[u8], data_type: &u8) -> RespValue {
-    let data = read_line(&input[1..], None).expect("Missing CFRL");
+fn simple_parser(input: &[u8], data_type: &u8) -> ParseResult {
+    let data = read_line(&input[1..], None)?;
     match data_type {
         b'+' => {
-            RespValue::SimpleString(data.0.to_vec())
+            Ok(ParseValue{
+                result: RespValue::SimpleString(data.0.to_vec()),
+                bytes_read: input.len() - data.1.len()
+            })
         },
         b'-' => {
-            RespValue::Error(data.0.to_vec())
+            Ok(ParseValue{
+                result: RespValue::Error(data.0.to_vec()),
+                bytes_read: input.len() - data.1.len()
+            })
         },
         b':' => {
-            let val = parse_int(data.0);
-            RespValue::Integer(val)
+            let (val, _) = read_integer(data.0, CrLfCheck::Skip)?;
+            dbg!(val);
+            Ok(ParseValue{
+                result: RespValue::Integer(val),
+                bytes_read: input.len() - data.1.len()
+            })
         }
         _ => {
             eprintln!("Unknown data type");
-            exit(1);
+            Err(ParseError::InvalidInput)
         }
     }
 }
 
-fn bulk_string_parser(input: &[u8]) -> RespValue{
-    let (size_of_string, length_of_string) = read_integer(&input[1..]);
-    let data = read_line(&input[(length_of_string + 1)..], Some(size_of_string as usize)).expect("Missing CFRL");
-    RespValue::BulkString(Some(data.0.to_vec()))
+fn bulk_string_parser(input: &[u8]) -> ParseResult {
+    let (size_of_string, length_of_string) = read_integer(&input[1..], CrLfCheck::Required)?;       
+    if size_of_string < 0{
+        return Ok(ParseValue{
+            result: RespValue::BulkString(None),
+            bytes_read: length_of_string + 1
+        });
+    }
+
+    let data = read_line(&input[(length_of_string + 1)..], Some(size_of_string as usize))?;
+  
+    Ok(ParseValue{
+        result: RespValue::BulkString(Some(data.0.to_vec())),
+        bytes_read: input.len() - data.1.len()
+    })
 }
 
-fn bulk_array_parser(input: &[u8]) -> RespValue { 
-    let (size_of_array, length_of_size) = read_integer(&input[1..]);
+fn bulk_array_parser(input: &[u8]) -> ParseResult { 
+    let (size_of_array, length_of_size) = read_integer(&input[1..], CrLfCheck::Skip)?;
+    if size_of_array < 0{
+        return Ok(ParseValue{
+            result: RespValue::Arrays(None),
+            bytes_read: length_of_size + 1
+        });
+    }
 
     let mut curr_input = &input[(length_of_size + 1)..];
 
     let mut bulk_array = Vec::new();
 
+    let mut total_bytes_read = length_of_size + 1;
+
     for _ in 0..size_of_array {
 
         if curr_input.is_empty() {
-            break;
+            return Err(ParseError::UnexpectedEof);
         }
         
-        let curr_element = parse_dispatcher(curr_input);
-        bulk_array.push(curr_element);
+        let curr_element = parse_dispatcher(curr_input)?;
 
-        if !curr_data.1.is_empty() {
-            curr_input = &curr_data.1[2..];
-        }
+        bulk_array.push(curr_element.result);
+        total_bytes_read += curr_element.bytes_read;
+        curr_input = &input[total_bytes_read..];
     }
 
-    dbg!(&bulk_array);
-    RespValue::Arrays(Some(bulk_array))
-
+    Ok(ParseValue{
+        result: RespValue::Arrays(Some(bulk_array)),
+        bytes_read: total_bytes_read
+    })
 }
 
 
@@ -176,37 +218,44 @@ mod tests{
 
     #[test]
     fn simple_parser_integer_test(){
-        let input = b":+1\r\n";
+        let input = b":+2\r\n";
         let res = simple_parser(input, &b':');
-        assert_eq!(res, RespValue::Integer(1));
+        assert_eq!(res.unwrap().result, RespValue::Integer(2));
+    }
+
+    #[test]
+    fn simple_parser_integer_test1(){
+        let input = b":1\r\n";
+        let res = simple_parser(input, &b':');
+        assert_eq!(res.unwrap().result, RespValue::Integer(1));
     }
 
     #[test]
     fn simple_parser_string_test(){
         let input = b"+1\r\n";
         let res = simple_parser(input, &b'+');
-        assert_eq!(res, RespValue::SimpleString(vec![b'1']))
+        assert_eq!(res.unwrap().result, RespValue::SimpleString(vec![b'1']))
     }
 
     #[test]
     fn simple_parser_error_test(){
         let input = b"-Error message\r\n";
         let res = simple_parser(input, &b'-');
-        assert_eq!(res, RespValue::Error(b"Error message".to_vec()));
+        assert_eq!(res.unwrap().result, RespValue::Error(b"Error message".to_vec()));
     }
 
     #[test]
     fn bulk_string_parse_test(){
         let input = b"$5\r\nHello\r\n";
         let res = bulk_string_parser(input);
-        assert_eq!(res, RespValue::BulkString(Some(b"Hello".to_vec())));
+        assert_eq!(res.unwrap().result, RespValue::BulkString(Some(b"Hello".to_vec())));
     }
 
     #[test]
     fn bulk_string_parse_test2(){
         let input = b"$9\r\nHe\rl\nl\r\no\r\n";
         let res = bulk_string_parser(input);
-        assert_eq!(res, RespValue::BulkString(Some(b"He\rl\nl\r\no".to_vec())));
+        assert_eq!(res.unwrap().result, RespValue::BulkString(Some(b"He\rl\nl\r\no".to_vec())));
     }
 
     #[test]
@@ -217,9 +266,260 @@ mod tests{
             RespValue::BulkString(Some(b"hello".to_vec())),
             RespValue::BulkString(Some(b"world".to_vec())),
         ]));
-        assert_eq!(res, result);
+        assert_eq!(res.unwrap().result, result);
     }
 
+    #[test]
+    fn bulk_array_empty() {
+        let input = b"*0\r\n";
+        let res = bulk_array_parser(input);
+        let result = RespValue::Arrays(Some(vec![]));
+        assert_eq!(res.unwrap().result, result);
+    }
+
+    #[test]
+    fn bulk_array_single_element() {
+        let input = b"*1\r\n$3\r\nfoo\r\n";
+        let res = bulk_array_parser(input);
+        let result = RespValue::Arrays(Some(vec![
+            RespValue::BulkString(Some(b"foo".to_vec())),
+        ]));
+        assert_eq!(res.unwrap().result, result);
+    }
+
+
+    #[test]
+    fn bulk_array_null() {
+        let input = b"*-1\r\n";
+        let res = bulk_array_parser(input);
+        let result = RespValue::Arrays(None);
+        assert_eq!(res.unwrap().result, result);
+    }
+    #[test]
+    fn bulk_array_with_null_bulk_string() {
+        let input = b"*2\r\n$3\r\nfoo\r\n$-1\r\n";
+        let res = bulk_array_parser(input);
+        let result = RespValue::Arrays(Some(vec![
+            RespValue::BulkString(Some(b"foo".to_vec())),
+            RespValue::BulkString(None),
+        ]));
+        assert_eq!(res.unwrap().result, result);
+    }
+    #[test]
+    fn bulk_array_empty_bulk_string() {
+        let input = b"*1\r\n$0\r\n\r\n";
+        let res = bulk_array_parser(input);
+        let result = RespValue::Arrays(Some(vec![
+            RespValue::BulkString(Some(Vec::new())),
+        ]));
+        assert_eq!(res.unwrap().result, result);
+    }
+    #[test]
+    fn bulk_array_many_elements() {
+        let input = b"*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
+        let res = bulk_array_parser(input);
+        let result = RespValue::Arrays(Some(vec![
+            RespValue::BulkString(Some(b"a".to_vec())),
+            RespValue::BulkString(Some(b"b".to_vec())),
+            RespValue::BulkString(Some(b"c".to_vec())),
+        ]));
+        assert_eq!(res.unwrap().result, result);
+    }
+    #[test]
+    fn bulk_array_length_mismatch() {
+        let input = b"*2\r\n$3\r\nfoo\r\n";
+        let res = bulk_array_parser(input);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn read_integer_negative() {
+        let (v, n) = read_integer(b"-1\r\n", CrLfCheck::Required).unwrap();
+        assert_eq!(v, -1);
+        assert_eq!(n, 4);
+    }
+
+    #[test]
+    fn read_integer_positive_with_plus() {
+        let (v, n) = read_integer(b"+42\r\n", CrLfCheck::Required).unwrap();
+        assert_eq!(v, 42);
+        assert_eq!(n, 5);
+    }
+
+    #[test]
+    fn read_integer_zero() {
+        let (v, n) = read_integer(b"0\r\n", CrLfCheck::Required).unwrap();
+        assert_eq!(v, 0);
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn parse_dispatcher_simple_string() {
+        let input = b"+OK\r\n";
+        let res = parse_dispatcher(input);
+        assert_eq!(res.unwrap().result, RespValue::SimpleString(b"OK".to_vec()));
+    }
+
+    #[test]
+    fn parse_dispatcher_integer() {
+        let input = b":-10\r\n";
+        let res = parse_dispatcher(input);
+        assert_eq!(res.unwrap().result, RespValue::Integer(-10));
+    }
+
+    #[test]
+    fn parse_dispatcher_bulk_string() {
+        let input = b"$4\r\ntest\r\n";
+        let res = parse_dispatcher(input);
+        assert_eq!(
+            res.unwrap().result,
+            RespValue::BulkString(Some(b"test".to_vec()))
+        );
+    }
+
+    #[test]
+    fn parse_dispatcher_array() {
+        let input = b"*1\r\n$3\r\nfoo\r\n";
+        let res = parse_dispatcher(input);
+        assert_eq!(
+            res.unwrap().result,
+            RespValue::Arrays(Some(vec![
+                RespValue::BulkString(Some(b"foo".to_vec()))
+            ]))
+        );
+    }
+    #[test]
+    fn bulk_array_nested_mixed() {
+        let input = b"*3\r\n$3\r\nfoo\r\n*2\r\n:1\r\n:2\r\n$3\r\nbar\r\n";
+        let res = bulk_array_parser(input);
+
+        let expected = RespValue::Arrays(Some(vec![
+            RespValue::BulkString(Some(b"foo".to_vec())),
+            RespValue::Arrays(Some(vec![
+                RespValue::Integer(1),
+                RespValue::Integer(2),
+            ])),
+            RespValue::BulkString(Some(b"bar".to_vec())),
+        ]));
+
+        assert_eq!(res.unwrap().result, expected);
+    }
+
+    #[test]
+    fn bulk_array_nested_empty() {
+        let input = b"*1\r\n*0\r\n";
+        let res = bulk_array_parser(input);
+
+        let expected = RespValue::Arrays(Some(vec![
+            RespValue::Arrays(Some(vec![])),
+        ]));
+
+        assert_eq!(res.unwrap().result, expected);
+    }
+
+    #[test]
+    fn bulk_array_with_null_array() {
+        let input = b"*2\r\n*-1\r\n$3\r\nfoo\r\n";
+        let res = bulk_array_parser(input);
+
+        let expected = RespValue::Arrays(Some(vec![
+            RespValue::Arrays(None),
+            RespValue::BulkString(Some(b"foo".to_vec())),
+        ]));
+
+        assert_eq!(res.unwrap().result, expected);
+    }
+
+    #[test]
+    fn bulk_array_null_nested() {
+        let input = b"*1\r\n*1\r\n*-1\r\n";
+        let res = bulk_array_parser(input);
+
+        let expected = RespValue::Arrays(Some(vec![
+            RespValue::Arrays(Some(vec![
+                RespValue::Arrays(None),
+            ])),
+        ]));
+
+        assert_eq!(res.unwrap().result, expected);
+    }
+
+    #[test]
+    fn integer_plus_zero() {
+        let input = b":+0\r\n";
+        let res = simple_parser(input, &b':');
+        assert_eq!(res.unwrap().result, RespValue::Integer(0));
+    }
+
+    #[test]
+    fn integer_large_value() {
+        let input = b":2147483647\r\n";
+        let res = simple_parser(input, &b':');
+        assert_eq!(res.unwrap().result, RespValue::Integer(2147483647));
+    }
+
+    #[test]
+    fn bulk_string_truncated() {
+        let input = b"$5\r\nHell";
+        let res = bulk_string_parser(input);
+        assert!(res.is_err());
+    }
+    #[test]
+    fn bulk_string_invalid_length() {
+        let input = b"$x\r\nabc\r\n";
+        let res = bulk_string_parser(input);
+        assert!(res.is_err());
+    }
+    #[test]
+    fn bulk_array_invalid_length() {
+        let input = b"*x\r\n";
+        let res = bulk_array_parser(input);
+        assert!(res.is_err());
+    }
+    #[test]
+    fn bulk_array_nested_eof() {
+        let input = b"*2\r\n$3\r\nfoo\r\n*2\r\n:1\r\n";
+        let res = bulk_array_parser(input);
+        assert!(res.is_err());
+    }
+    #[test]
+    fn integer_missing_crlf() {
+        let input = b":123\n";
+        let res = simple_parser(input, &b':');
+        assert!(res.is_err());
+    }
+    #[test]
+    fn bulk_string_missing_crlf_after_length() {
+        let input = b"$3\nabc\r\n";
+        let res = bulk_string_parser(input);
+        assert!(res.is_err());
+    }
+    #[test]
+    fn bulk_array_bytes_read_exact() {
+        let input = b"*1\r\n$3\r\nfoo\r\n";
+        let res = bulk_array_parser(input).unwrap();
+        assert_eq!(res.bytes_read, input.len());
+    }
+
+    #[test]
+    fn bulk_array_numbers() {
+        let input = b"*2\r\n:1\r\n:2\r\n";
+        let res = bulk_array_parser(input).unwrap();
+
+        let expected = RespValue::Arrays(Some(vec![
+            RespValue::Integer(1),
+            RespValue::Integer(2),
+        ]));
+
+        assert_eq!(res.result, expected);
+    }
+
+    #[test]
+    fn read_integer_invalid_input(){
+        let input = b":\r\n";
+        let res = read_integer(input, CrLfCheck::Required);
+        assert!(res.is_err());
+    }
 }
 
 

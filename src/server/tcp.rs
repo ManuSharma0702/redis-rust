@@ -1,7 +1,7 @@
 use std::{io::{Read, Write}, net::{TcpListener, TcpStream}} ;
 
 use crate::{command::{execute_command, get_command, CommandError}, 
-    resp::{parse_dispatcher, serializer::serializer, ParseError, RespValue}, server::value::ServerError};
+    resp::{parse_dispatcher, serializer::serializer, ParseError, RespValue}, server::value::ServerError, store::value::Store};
 
 impl From<CommandError> for ServerError {
     fn from(e: CommandError) -> Self{
@@ -17,30 +17,31 @@ impl From<ParseError> for ServerError {
 
 pub fn create_connection(){
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    let mut store = Store::new();
 
     for stream in listener.incoming(){
         let stream = stream.unwrap();
         println!("Connection Established");
-        handle_connection(stream);
+        handle_connection(stream, &mut store);
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
+fn handle_connection(mut stream: TcpStream, store: &mut Store) {
     let mut buf = [0u8; 512];
     let n = stream.read(&mut buf).unwrap();
     let data = &buf[..n];
-    let output_data = process(data).unwrap_or_else(|error| {
+    let output_data = process(data, store).unwrap_or_else(|error| {
         let res = error_to_resp(error);
         serializer(&res).unwrap()
     });
     stream.write_all(&output_data).unwrap();
 }
 
-fn process(data: &[u8]) -> Result<Vec<u8>, ServerError>{
+fn process(data: &[u8], store: &mut Store) -> Result<Vec<u8>, ServerError>{
 
     let parsed_data = parse_dispatcher(data)?.result;
     let command = get_command(&parsed_data)?;
-    let result = execute_command(command, &parsed_data)?;
+    let result = execute_command(command, &parsed_data, store)?;
 
     let output_data = serializer(&result)?;
     Ok(output_data)

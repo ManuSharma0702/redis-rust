@@ -2,6 +2,8 @@
 pub enum Commands {
     PING,
     ECHO,
+    SET,
+    GET
 }
 
 #[derive(Debug)]

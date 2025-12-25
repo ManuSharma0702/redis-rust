@@ -1,4 +1,5 @@
 use super::value::*;
+use std::hash::{Hash, Hasher};
 
 impl PartialEq for RespValue{
     fn eq(&self, other: &Self) -> bool {
@@ -15,6 +16,42 @@ impl PartialEq for RespValue{
             _ => false
         }
 
+    }
+}
+
+impl Eq for RespValue{}
+
+impl Hash for RespValue{
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        use RespValue::*;
+        match self{
+            SimpleString(v) => {
+                0.hash(state);
+                v.hash(state);
+            },
+            Error(v) => {
+                1.hash(state);
+                v.hash(state);
+            },
+            Integer(v) => {
+                2.hash(state);
+                v.hash(state);
+            },
+            BulkString(Some(v)) => {
+                3.hash(state);
+                v.hash(state);
+            },
+            BulkString(None) => {
+                4.hash(state);
+            },
+            Arrays(Some(arr)) => {
+                5.hash(state);
+                arr.hash(state);
+            },
+            Arrays(None) => {
+                6.hash(state);
+            }
+        }
     }
 }
 

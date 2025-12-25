@@ -2,9 +2,12 @@ use crate::{command::{CommandError, Commands}, resp::value::RespValue};
 
 impl Commands {
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        match bytes {
+        let upper = bytes.iter().map(|b| b.to_ascii_uppercase()).collect::<Vec<u8>>();
+        match upper.as_slice() {
             b"PING" => Some(Commands::PING),
             b"ECHO" => Some(Commands::ECHO),
+            b"SET" => Some(Commands::SET),
+            b"GET" => Some(Commands::GET),
             _ => None
         }
     }

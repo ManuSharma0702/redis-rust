@@ -14,16 +14,14 @@ impl Store {
     }
 
     pub fn set(&mut self, key: &RespValue, value: &RespValue) -> Result<RespValue, StoreError> {
-        match self.map.insert(key.clone(), value.clone()) {
-            Some(_) => Ok(RespValue::SimpleString(b"Ok".to_vec())),
-            None => Err(StoreError::Failed)
-        }
+        self.map.insert(key.clone(), value.clone());
+        Ok(RespValue::SimpleString(b"OK".to_vec()))
     }
 
     pub fn get(&self, key: &RespValue) -> Result<RespValue, StoreError> {
         match self.map.get(key) {
             Some(n) => Ok(n.clone()),
-            None => Err(StoreError::NotFound)
+            None => Ok(RespValue::BulkString(None))
         }
 
     }

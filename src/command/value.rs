@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Commands {
     PING,
     ECHO,
@@ -6,7 +6,7 @@ pub enum Commands {
     GET
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum CommandError{
     ParseFailed,
     InvalidRequest,

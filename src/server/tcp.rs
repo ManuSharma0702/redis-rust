@@ -18,10 +18,8 @@ impl From<ParseError> for ServerError {
 pub fn create_connection(){
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
     let mut store = Store::new();
-
     for stream in listener.incoming(){
         let stream = stream.unwrap();
-        println!("Connection Established");
         handle_connection(stream, &mut store);
     }
 }
